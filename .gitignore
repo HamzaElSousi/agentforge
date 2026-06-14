@@ -1,0 +1,34 @@
+# Personal — never push
+LEARNING_OUTCOMES.md
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Run artifacts
+trace.json
+runs/
+workspace/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

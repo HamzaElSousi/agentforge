@@ -1,0 +1,49 @@
+# 2-agent competitor analysis — analyst → strategist (terminal).
+# A tighter pipeline showing per-agent models and a strict-ish permission policy.
+#
+#   agentforge run examples/competitor-analysis.yaml \
+#     --goal "Compare Stripe and Adyen for a European SaaS in 2026"
+name: competitor-analysis
+
+llm:
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash
+  api_key_env: OPENROUTER_API_KEY
+
+budget:
+  max_usd_per_run: 0.20
+  max_total_iterations: 24
+
+sandbox:
+  backend: subprocess
+  network: false
+  timeout_s: 20
+
+permissions:
+  mode: prompt
+  auto_approve: [web_search, read_url, read_note, read_file]
+  require_approval: [write_file, save_note]
+  deny: []
+  non_interactive: allow_auto_approved   # in CI, run only the read-only tools
+
+agents:
+  analyst:
+    role: >
+      Research both companies' pricing, target market, and differentiators using
+      the web. Save concrete findings with save_note. When you have a solid
+      evidence base for both, summarize it for the strategist.
+    tools: [web_search, read_url, save_note]
+    handoff_to: strategist
+    max_iterations: 12
+
+  strategist:
+    role: >
+      Read the analyst's notes and produce a decision-oriented recommendation:
+      who should pick which provider and why. Write it to recommendation.md and
+      return the final text.
+    model: minimax/minimax-m3            # stronger model for the reasoning step
+    tools: [read_note, write_file]
+    terminal: true
+    max_iterations: 8
+
+start: analyst

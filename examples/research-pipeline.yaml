@@ -1,0 +1,56 @@
+# 3-agent research pipeline — the canonical AgentForge demo.
+# researcher → writer → reviewer (terminal).
+#
+#   agentforge run examples/research-pipeline.yaml \
+#     --goal "Research Notion's pricing and positioning vs Linear"
+name: competitor-research
+
+llm:
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash       # strong, cheap reasoner, 1M context
+  api_key_env: OPENROUTER_API_KEY
+
+budget:
+  max_usd_per_run: 0.25                   # hard cap — aborts the run if exceeded
+  max_total_iterations: 30                # across the whole pipeline
+
+sandbox:
+  backend: subprocess                     # subprocess | docker | e2b
+  network: false                          # net-using tools (web_search) are exempt
+  timeout_s: 20
+
+permissions:
+  mode: prompt                            # auto | prompt | strict
+  auto_approve: [web_search, read_url, read_file, read_note]   # safe / read-only
+  require_approval: [write_file]                               # side-effecting → ask first
+  deny: []
+  non_interactive: deny                   # no TTY (CI): deny | allow_auto_approved
+
+agents:
+  researcher:
+    role: >
+      Search the web and collect key facts about the target company or topic.
+      Save useful findings with save_note. When you have 5+ solid facts, stop
+      and summarize them for the writer.
+    tools: [web_search, read_url, save_note]
+    handoff_to: writer
+    max_iterations: 10
+
+  writer:
+    role: >
+      Read the research notes and write a clear 300-word competitive analysis.
+      Save it with write_file as analysis.md, then summarize what you wrote.
+    model: qwen/qwen3.6-flash             # per-agent override — cheaper model for a simpler job
+    tools: [read_note, write_file]
+    handoff_to: reviewer
+    max_iterations: 6
+
+  reviewer:
+    role: >
+      Read analysis.md, check it for accuracy and clarity, fix any issues, and
+      return the final approved version as your answer.
+    tools: [read_file, write_file]
+    terminal: true
+    max_iterations: 6
+
+start: researcher

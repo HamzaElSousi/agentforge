@@ -1,0 +1,53 @@
+# 2-agent code review — reviewer → fixer (terminal). Demonstrates opt-in
+# run_python in a sandbox plus a strict permission policy on writes.
+#
+#   agentforge run examples/code-review-pipeline.yaml \
+#     --goal "Review the snippet in input.py for bugs and propose a fix"
+#
+# Put the code to review in the run workspace as input.py, or have the reviewer
+# write it first. run_python is opt-in (allow_run_python below) and sandboxed.
+name: code-review
+
+llm:
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash
+  api_key_env: OPENROUTER_API_KEY
+
+budget:
+  max_usd_per_run: 0.20
+  max_total_iterations: 20
+
+sandbox:
+  backend: subprocess          # use 'docker' for stronger isolation if available
+  network: false
+  timeout_s: 15
+  cpu_seconds: 8
+  memory_mb: 512
+  allow_run_python: true       # opt-in: lets the agent execute snippets in the sandbox
+
+permissions:
+  mode: prompt
+  auto_approve: [read_file, read_note]
+  require_approval: [write_file, save_note, run_python]   # gate code execution + writes
+  deny: []
+  non_interactive: deny
+
+agents:
+  reviewer:
+    role: >
+      Read the code under review (read_file), identify bugs and risks, and
+      optionally run small snippets with run_python to confirm behavior. Write a
+      findings list with write_file as review.md, then hand off to the fixer.
+    tools: [read_file, write_file, save_note, run_python]
+    handoff_to: fixer
+    max_iterations: 10
+
+  fixer:
+    role: >
+      Read review.md and the original code, apply the fixes, write the corrected
+      version with write_file, and return a short summary of what you changed.
+    tools: [read_file, write_file]
+    terminal: true
+    max_iterations: 8
+
+start: reviewer

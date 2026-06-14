@@ -208,6 +208,10 @@ The argument schema (`text: string`, required) is generated from the signature; 
 | 🔁 **Loop safety** | Per-agent + pipeline iteration caps, handoff-cycle detection, repeated-action detection, wall-clock timeouts — all **graceful** (log + partial result, never a crash). |
 | 🔑 **Secret hygiene** | API keys come from env, are never passed into agent context, and are **redacted** from `trace.json`. |
 
+**Sandboxed `run_python` in action** — the code-review pipeline writes a buggy function, executes it in the subprocess sandbox to reproduce a `ZeroDivisionError`, then the fixer hands back a guarded version (every call permission-gated):
+
+![Code review with sandboxed run_python](https://raw.githubusercontent.com/HamzaElSousi/agentforge/main/docs/agentforge-code-review.gif)
+
 ---
 
 ## Configuration reference

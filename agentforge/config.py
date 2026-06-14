@@ -146,7 +146,28 @@ class PipelineConfig(BaseModel):
                         f"agent {agent_name!r} depends_on unknown agent {dep!r}"
                     )
 
-        # v1 is sequential: there must be a reachable terminal (or a dangling
+        # DAG mode (V2): if any agent uses depends_on, the graph must be acyclic.
+        dag_mode = any(a.depends_on for a in self.agents.values())
+        if dag_mode:
+            indeg = {n: len(a.depends_on) for n, a in self.agents.items()}
+            adj: dict[str, list[str]] = {n: [] for n in self.agents}
+            for n, a in self.agents.items():
+                for d in a.depends_on:
+                    adj[d].append(n)
+            ready = [n for n, d in indeg.items() if d == 0]
+            seen = 0
+            while ready:
+                node = ready.pop()
+                seen += 1
+                for m in adj[node]:
+                    indeg[m] -= 1
+                    if indeg[m] == 0:
+                        ready.append(m)
+            if seen != len(self.agents):
+                raise ValueError("'depends_on' graph has a cycle — agents cannot all run")
+            return self
+
+        # v1 sequential: there must be a reachable terminal (or a dangling
         # handoff that ends the chain). Guard against an all-handoff cycle with
         # no terminal so the pipeline can actually stop.
         has_terminal = any(a.terminal for a in self.agents.values())

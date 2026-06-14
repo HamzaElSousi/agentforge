@@ -45,7 +45,7 @@ The V1 config and data structures are built DAG-ready so these don't require a r
 
 | Item | What | Status |
 |------|------|--------|
-| DAG pipelines | Replace single `handoff_to`/`start` with optional `depends_on` graph | 🔮 |
+| DAG pipelines | Optional `depends_on` graph with topological execution + join (fan-in) | ✅ **Phase 1 done** (sequential exec; see `examples/research-dag.yaml`) |
 | Parallel fan-out / fan-in | One agent spawns N parallel workers; a join agent merges results | 🔮 |
 | Concurrency-safe blackboard | Generalize `save_note`/`read_note` into a shared store for parallel agents | 🔮 |
 | Cross-branch budgeting | Per-run cap governs parallel branches (orchestrator-level, already designed for it) | 🔮 |

@@ -1,0 +1,65 @@
+# V2 PREVIEW — a DAG pipeline using `depends_on` (fan-in / join).
+#
+# Two researchers work from the same plan and a synthesizer merges both.
+# In V2 Phase 1 the DAG executes in topological order (sequentially); Phase 2
+# runs independent branches (the two researchers) in parallel — same config.
+#
+#   agentforge run examples/research-dag.yaml \
+#     --goal "Compare Notion and Linear for a scaling startup" --yes
+name: research-dag
+
+llm:
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash
+  api_key_env: OPENROUTER_API_KEY
+
+budget:
+  max_usd_per_run: 0.30
+  max_total_iterations: 40
+
+sandbox:
+  backend: subprocess
+  network: false
+  timeout_s: 20
+
+permissions:
+  mode: prompt
+  auto_approve: [web_search, read_url, read_note, save_note]
+  require_approval: [write_file]
+  non_interactive: allow_auto_approved
+
+agents:
+  planner:
+    role: >
+      Break the goal into two angles to research: (1) pricing & plans, and
+      (2) product positioning & target users. State the two angles clearly.
+    tools: [save_note]
+    max_iterations: 3
+
+  pricing_researcher:
+    role: >
+      Research the PRICING and plan tiers for both products. Save concrete
+      figures with save_note, then summarize them.
+    tools: [web_search, read_url, save_note]
+    depends_on: [planner]          # DAG edge — waits for the planner
+    max_iterations: 8
+
+  positioning_researcher:
+    role: >
+      Research the POSITIONING — who each product targets and its core
+      differentiators. Save findings with save_note, then summarize them.
+    tools: [web_search, read_url, save_note]
+    depends_on: [planner]          # independent of pricing_researcher (parallel in V2 Phase 2)
+    max_iterations: 8
+
+  synthesizer:
+    role: >
+      Merge the pricing and positioning research into one concise comparison
+      with a recommendation. Write it to comparison.md and return the final text.
+    model: minimax/minimax-m3
+    tools: [read_note, write_file]
+    depends_on: [pricing_researcher, positioning_researcher]   # join — waits for both
+    terminal: true
+    max_iterations: 6
+
+start: planner

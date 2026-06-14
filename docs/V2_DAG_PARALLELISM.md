@@ -93,9 +93,12 @@ start: planner
   non-fatal → partial result + trace.
 
 ## 5. Phased build plan
-1. **DAG (no parallelism yet):** topological scheduler running ready agents
-   *sequentially* — proves `depends_on`, join semantics, trace `branch_id`, the
-   deadlock guard. Pure refactor of the current loop; all v1 tests stay green.
+1. ✅ **DAG (no parallelism yet) — DONE:** topological scheduler (`_topological_order`,
+   `_run_dag` in `orchestrator.py`) runs agents in dependency order; the join agent
+   receives all `depends_on` outputs; `depends_on`/`branch_id` land in the trace;
+   cycles are rejected at config load + by a runtime deadlock guard. Pure refactor —
+   all v1 sequential pipelines/tests unchanged (`run_pipeline` dispatches on
+   `dag_mode`). Covered by `tests/test_dag.py`; example `examples/research-dag.yaml`.
 2. **Parallel execution:** add the thread pool + thread-safe budget/blackboard +
    cancellation. Tests with the scripted `FakeLLMClient` assert N branches run,
    the join waits for all, and a mid-run budget abort cancels cleanly.

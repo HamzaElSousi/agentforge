@@ -158,92 +158,47 @@ def run_pipeline(
         if cfg.budget.wall_clock_s and (time.monotonic() - t0) > cfg.budget.wall_clock_s:
             raise PipelineStop(StopReason.WALL_CLOCK)
 
-    # --- sequential handoff loop ------------------------------------------ #
-    current = cfg.start
-    incoming: Optional[str] = None
-    final_output = ""
-    stopped_reason = StopReason.COMPLETED
-    visits: dict[str, int] = {}
-    handoff_cap = max(3, 2 * len(cfg.agents))
-
-    console.print(f"[bold cyan]▶ running pipeline[/bold cyan] '{cfg.name}' — goal: {goal}")
-    emit({"type": "run_start", "pipeline": cfg.name, "goal": goal,
-          "agents": list(cfg.agents), "start": cfg.start})
-
-    while True:
-        visits[current] = visits.get(current, 0) + 1
-        if visits[current] > handoff_cap:
-            stopped_reason = StopReason.HANDOFF_CYCLE
-            break
-
-        agent_cfg = cfg.agents[current]
+    # --- per-agent execution (shared by the sequential + DAG paths) ------- #
+    def run_agent(name: str, incoming: Optional[str]):
+        agent_cfg = cfg.agents[name]
         model = agent_cfg.model or cfg.llm.model
-        at = recorder.add_agent(current, model)
-
+        at = recorder.add_agent(name, model)
+        at.branch_id = name
+        at.depends_on = list(agent_cfg.depends_on)
         try:
             tools = REGISTRY.subset(agent_cfg.tools)
         except KeyError as e:
             console.print(f"[bold red]✗ {e}[/bold red]")
             raise SystemExit(2)
 
-        console.print(f"  [bold]{current}[/bold] ({model}) — tools: {agent_cfg.tools or 'none'}")
-        emit({"type": "agent_start", "agent": current, "model": model, "tools": agent_cfg.tools})
+        console.print(f"  [bold]{name}[/bold] ({model}) — tools: {agent_cfg.tools or 'none'}")
+        emit({"type": "agent_start", "agent": name, "branch_id": name,
+              "model": model, "tools": agent_cfg.tools})
         runner = AgentRunner(
-            name=current,
-            role=agent_cfg.role,
-            client=client,
-            model=model,
-            tools=tools,
-            ctx=ctx,
-            permissions=permissions,
-            budget=budget,
-            agent_trace=at,
-            console=console,
-            terminal=agent_cfg.terminal,
-            handoff_to=agent_cfg.handoff_to,
-            max_iterations=agent_cfg.max_iterations,
-            temperature=cfg.llm.temperature,
-            max_tokens=cfg.llm.max_tokens,
-            context_token_cap=None,
-            on_iteration=pipeline_iter_guard,
-            emit=emit,
+            name=name, role=agent_cfg.role, client=client, model=model, tools=tools,
+            ctx=ctx, permissions=permissions, budget=budget, agent_trace=at, console=console,
+            terminal=agent_cfg.terminal, handoff_to=agent_cfg.handoff_to,
+            max_iterations=agent_cfg.max_iterations, temperature=cfg.llm.temperature,
+            max_tokens=cfg.llm.max_tokens, context_token_cap=None,
+            on_iteration=pipeline_iter_guard, emit=emit,
         )
+        result = runner.run(goal, incoming)
+        emit({"type": "agent_end", "agent": name, "branch_id": name, "kind": result.kind,
+              "output": (result.output or "")[:1000], "handoff_to": result.handoff_to,
+              "stopped_reason": result.stopped_reason, "cost_usd": round(at.cost_usd, 6)})
+        return result, at
 
-        try:
-            result: AgentResult = runner.run(goal, incoming)
-        except BudgetExceeded as e:
-            console.print(f"  [yellow]⛔ budget cap hit (${e.cap}); returning partial result[/yellow]")
-            stopped_reason = StopReason.BUDGET_EXCEEDED
-            final_output = at.handoff_context or final_output
-            break
-        except PipelineStop as e:
-            console.print(f"  [yellow]⛔ {e.reason}; returning partial result[/yellow]")
-            stopped_reason = e.reason
-            break
+    dag_mode = any(a.depends_on for a in cfg.agents.values())
+    console.print(f"[bold cyan]▶ running pipeline[/bold cyan] '{cfg.name}'"
+                  f"{' [dim](DAG)[/dim]' if dag_mode else ''} — goal: {goal}")
+    emit({"type": "run_start", "pipeline": cfg.name, "goal": goal,
+          "agents": list(cfg.agents), "start": cfg.start,
+          "mode": "dag" if dag_mode else "sequential"})
 
-        emit({"type": "agent_end", "agent": current, "kind": result.kind,
-              "output": (result.output or "")[:1000],
-              "handoff_to": result.handoff_to,
-              "stopped_reason": result.stopped_reason,
-              "cost_usd": round(at.cost_usd, 6)})
-
-        # An agent that concludes with empty text (a weak model dropping its
-        # task) must never clobber substantive earlier output — fall back to the
-        # best partial we have so the run returns useful content, not "(none)".
-        if result.kind == "final":
-            final_output = result.output or final_output
-            stopped_reason = at.stopped_reason or StopReason.COMPLETED
-            break
-        if result.kind == "stopped":
-            final_output = result.output or final_output
-            stopped_reason = result.stopped_reason or StopReason.COMPLETED
-            break
-        # handoff — carry the last non-empty context/partial forward
-        incoming = result.output or incoming
-        final_output = result.output or final_output
-        if not result.handoff_to:
-            break
-        current = result.handoff_to
+    if dag_mode:
+        stopped_reason, final_output = _run_dag(cfg, run_agent, console)
+    else:
+        stopped_reason, final_output = _run_sequential(cfg, run_agent, console)
 
     trace = recorder.finalize(stopped_reason=stopped_reason, final_output=final_output)
     if trace_path is not None:
@@ -254,6 +209,108 @@ def run_pipeline(
           "cost": trace.cost, "final_output": trace.final_output,
           "trace": trace.to_dict()})
     return trace.to_dict()
+
+
+def _run_sequential(cfg, run_agent, console: Console) -> tuple[str, str]:
+    """v1 path: follow ``start`` → ``handoff_to`` until a terminal/chain-end.
+
+    Returns ``(stopped_reason, final_output)``. Every stop is non-fatal.
+    """
+    current = cfg.start
+    incoming: Optional[str] = None
+    final_output = ""
+    visits: dict[str, int] = {}
+    handoff_cap = max(3, 2 * len(cfg.agents))
+
+    while True:
+        visits[current] = visits.get(current, 0) + 1
+        if visits[current] > handoff_cap:
+            return StopReason.HANDOFF_CYCLE, final_output
+        try:
+            result, at = run_agent(current, incoming)
+        except BudgetExceeded as e:
+            console.print(f"  [yellow]⛔ budget cap hit (${e.cap}); returning partial result[/yellow]")
+            return StopReason.BUDGET_EXCEEDED, final_output
+        except PipelineStop as e:
+            console.print(f"  [yellow]⛔ {e.reason}; returning partial result[/yellow]")
+            return e.reason, final_output
+
+        # An empty conclusion (a weak model dropping its task) must never clobber
+        # substantive earlier output — fall back to the best partial.
+        if result.kind == "final":
+            return (at.stopped_reason or StopReason.COMPLETED), (result.output or final_output)
+        if result.kind == "stopped":
+            return (result.stopped_reason or StopReason.COMPLETED), (result.output or final_output)
+        incoming = result.output or incoming
+        final_output = result.output or final_output
+        if not result.handoff_to:
+            return StopReason.COMPLETED, final_output
+        current = result.handoff_to
+
+
+def _topological_order(cfg) -> list[str]:
+    """Kahn's algorithm over ``depends_on``. Deterministic (``start`` first, then
+    config order). Raises :class:`PipelineStop` on a cycle — the deadlock guard."""
+    names = list(cfg.agents)
+    idx = {n: i for i, n in enumerate(names)}
+    indeg = {n: len(cfg.agents[n].depends_on) for n in names}
+    adj: dict[str, list[str]] = {n: [] for n in names}
+    for n in names:
+        for d in cfg.agents[n].depends_on:
+            adj[d].append(n)
+
+    def key(n: str):
+        return (0 if n == cfg.start else 1, idx[n])
+
+    ready = sorted([n for n in names if indeg[n] == 0], key=key)
+    order: list[str] = []
+    while ready:
+        node = ready.pop(0)
+        order.append(node)
+        newly = []
+        for m in adj[node]:
+            indeg[m] -= 1
+            if indeg[m] == 0:
+                newly.append(m)
+        if newly:
+            ready = sorted(ready + newly, key=key)
+    if len(order) != len(names):
+        raise PipelineStop(StopReason.HANDOFF_CYCLE)
+    return order
+
+
+def _package_deps(deps: list[str], outputs: dict[str, str]) -> Optional[str]:
+    """Bundle each dependency's output into the next agent's incoming context."""
+    parts = [f"--- Context from '{d}' ---\n{outputs[d]}" for d in deps if outputs.get(d)]
+    return "\n\n".join(parts) if parts else None
+
+
+def _run_dag(cfg, run_agent, console: Console) -> tuple[str, str]:
+    """V2 path (sequential execution of a DAG): run agents in topological order,
+    feeding each its dependencies' outputs. The terminal (join) agent's output is
+    the final result. Parallel execution of independent branches lands in V2
+    Phase 2 — this proves ``depends_on``, join semantics, and the deadlock guard.
+    """
+    order = _topological_order(cfg)
+    terminal_name = next((n for n, a in cfg.agents.items() if a.terminal), order[-1])
+    outputs: dict[str, str] = {}
+    final_output = ""
+
+    for name in order:
+        incoming = _package_deps(cfg.agents[name].depends_on, outputs)
+        try:
+            result, _ = run_agent(name, incoming)
+        except BudgetExceeded as e:
+            console.print(f"  [yellow]⛔ budget cap hit (${e.cap}); returning partial result[/yellow]")
+            return StopReason.BUDGET_EXCEEDED, (outputs.get(terminal_name) or final_output)
+        except PipelineStop as e:
+            console.print(f"  [yellow]⛔ {e.reason}; returning partial result[/yellow]")
+            return e.reason, (outputs.get(terminal_name) or final_output)
+        outputs[name] = result.output or ""
+        if result.output:
+            final_output = result.output
+
+    return StopReason.COMPLETED, (outputs.get(terminal_name) or final_output)
 
 
 def _estimate(cfg, goal: str, catalog: PricingCatalog, console: Console) -> dict:

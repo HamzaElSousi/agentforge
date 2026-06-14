@@ -35,6 +35,8 @@ class AgentTrace:
 
     name: str
     model: str
+    branch_id: Optional[str] = None  # DAG/parallel grouping (V2); defaults to the agent name
+    depends_on: list[str] = field(default_factory=list)  # DAG edges this agent waited on
     iterations: int = 0
     cost_usd: float = 0.0
     prompt_tokens: int = 0

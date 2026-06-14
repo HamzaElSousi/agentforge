@@ -37,6 +37,17 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _load_dotenv() -> None:
+    """Load a local ``.env`` (CWD or parents) so the documented
+    ``cp .env.example .env`` workflow works without manual exporting.
+    Real environment variables always take precedence."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # python-dotenv is a dependency, but degrade gracefully
+        return
+    load_dotenv(override=False)
+
+
 @app.callback()
 def _main(
     version: bool = typer.Option(
@@ -45,6 +56,7 @@ def _main(
     ),
 ) -> None:
     """AgentForge — YAML-defined multi-agent pipelines."""
+    _load_dotenv()
 
 
 @app.command()

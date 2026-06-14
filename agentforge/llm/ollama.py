@@ -25,13 +25,43 @@ from tenacity import (
     wait_exponential,
 )
 
-from agentforge.llm._openai_compat import messages_to_openai, tools_to_openai
+from agentforge.llm._openai_compat import tools_to_openai
 from agentforge.llm.base import LLMClient, LLMError
 from agentforge.messages import LLMResponse, Message, ToolCall, ToolSpec, Usage
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "http://localhost:11434/api/chat"
+
+
+def _messages_to_ollama(messages: list[Message]) -> list[dict[str, Any]]:
+    """Translate neutral messages to Ollama's chat format.
+
+    Critically different from the OpenAI format: Ollama expects tool-call
+    ``arguments`` in the *message history* to be a JSON **object** (dict), not a
+    JSON string. Sending a stringified object makes Ollama's tool parser fail
+    with "Value looks like object, but can't find closing '}'". Tool results are
+    sent as ``role: "tool"`` with the tool name attached.
+    """
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if m.role == "assistant" and m.tool_calls:
+            out.append({
+                "role": "assistant",
+                "content": m.content or "",
+                "tool_calls": [
+                    {"function": {"name": tc.name, "arguments": tc.arguments}}
+                    for tc in m.tool_calls
+                ],
+            })
+        elif m.role == "tool":
+            entry = {"role": "tool", "content": m.content or ""}
+            if m.name:
+                entry["tool_name"] = m.name
+            out.append(entry)
+        else:
+            out.append({"role": m.role, "content": m.content or ""})
+    return out
 
 
 class OllamaClient(LLMClient):
@@ -66,7 +96,19 @@ class OllamaClient(LLMClient):
         timeout: float = 120.0,
     ) -> None:
         super().__init__(model, api_key=api_key, base_url=base_url, timeout=timeout)
-        self._endpoint = base_url or _DEFAULT_BASE_URL
+        self._endpoint = self._normalize_endpoint(base_url)
+
+    @staticmethod
+    def _normalize_endpoint(base_url: Optional[str]) -> str:
+        """Accept either the Ollama server root (``http://host:11434``) or a full
+        endpoint. Users naturally configure the root, so append ``/api/chat``
+        when no API path is present."""
+        if not base_url:
+            return _DEFAULT_BASE_URL
+        url = base_url.rstrip("/")
+        if url.endswith("/api/chat") or "/api/" in url:
+            return url
+        return url + "/api/chat"
 
     def complete(
         self,
@@ -84,7 +126,7 @@ class OllamaClient(LLMClient):
 
         payload: dict[str, Any] = {
             "model": resolved_model,
-            "messages": messages_to_openai(messages),
+            "messages": _messages_to_ollama(messages),
             "stream": False,
             "options": {"temperature": temperature},
         }

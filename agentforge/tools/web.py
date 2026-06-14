@@ -198,9 +198,9 @@ def read_url(ctx: ToolContext, url: str) -> str:
         Extracted text content, or an error description if the URL is blocked
         or the request fails.
     """
-    if not ctx.network:
-        return "[read_url] Network access is disabled for this agent (network=False)."
-
+    # Note: web tools are network-exempt by design — the sandbox `network` flag
+    # governs sandboxed code execution (run_python), not these built-in tools,
+    # whose protection is the SSRF guard below (per the PRD).
     # Guard: block SSRF before touching the wire.
     try:
         assert_safe_url(url)
@@ -301,16 +301,17 @@ def web_search(ctx: ToolContext, query: str, max_results: int = 5) -> str:
     str
         Formatted search results, or an error message if the search fails.
     """
-    if not ctx.network:
-        return "[web_search] Network access is disabled for this agent (network=False)."
-
+    # web_search is network-exempt by design (the sandbox `network` flag governs
+    # run_python, not this in-process tool) — per the PRD.
+    # `duckduckgo_search` was renamed to `ddgs`; prefer the maintained package
+    # and fall back to the old name for older installs.
     try:
-        from duckduckgo_search import DDGS  # type: ignore[import]
+        from ddgs import DDGS  # type: ignore[import]
     except ImportError:
-        return (
-            "[web_search error] duckduckgo_search is not installed. "
-            "Run: pip install duckduckgo-search"
-        )
+        try:
+            from duckduckgo_search import DDGS  # type: ignore[import]
+        except ImportError:
+            return "[web_search error] search backend not installed. Run: pip install ddgs"
 
     try:
         results = list(DDGS().text(query, max_results=max(1, max_results)))

@@ -1,0 +1,61 @@
+# The 3-agent research pipeline, wired to a LOCAL Ollama model — zero cost,
+# fully offline (except the web_search/read_url tools, which use the network).
+# Proves AgentForge runs end-to-end against a real model with no API key.
+#
+#   ollama pull gemma4:e4b   # a tool-capable local model
+#   agentforge run examples/research-pipeline.ollama.yaml \
+#     --goal "Research Notion's pricing vs Linear" --yes
+name: research-ollama
+
+llm:
+  provider: ollama
+  model: gemma4:e4b                 # local, tool-capable (8B)
+  base_url: http://localhost:11434
+  max_tokens: 600
+
+budget:
+  max_usd_per_run: 1.0              # moot for Ollama (free) — iteration/wall-clock guards bound the run
+  max_total_iterations: 14
+  wall_clock_s: 1500               # hard pipeline timeout safety net
+
+sandbox:
+  backend: subprocess
+  network: false
+  timeout_s: 20
+
+permissions:
+  mode: prompt
+  auto_approve: [web_search, read_url, read_note, read_file, save_note]
+  require_approval: [write_file]
+  deny: []
+  non_interactive: allow_auto_approved
+
+agents:
+  researcher:
+    role: >
+      Search the web for key facts about the target. Call web_search with a
+      focused query, then save the most useful facts with save_note. After you
+      have a few solid facts, STOP calling tools and write a short bulleted
+      summary of what you found for the writer.
+    tools: [web_search, read_url, save_note]
+    handoff_to: writer
+    max_iterations: 4
+
+  writer:
+    role: >
+      Read the research notes with read_note, then write a concise ~200-word
+      analysis. Save it with write_file as analysis.md, then briefly summarize
+      what you wrote for the reviewer.
+    tools: [read_note, write_file]
+    handoff_to: reviewer
+    max_iterations: 3
+
+  reviewer:
+    role: >
+      Read analysis.md with read_file, check it for clarity, and return the
+      final approved version as your answer.
+    tools: [read_file, write_file]
+    terminal: true
+    max_iterations: 3
+
+start: researcher

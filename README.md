@@ -264,6 +264,8 @@ llm:
 
 No key, no cost. Models without native tool-calling automatically use the tolerant **text-ReAct** fallback (`Thought / Action / Action Input`).
 
+> **Seen it run.** The 3-agent pipeline in [`examples/research-pipeline.ollama.yaml`](examples/research-pipeline.ollama.yaml) was run end-to-end against a local `gemma4:e4b` model — researcher → writer → reviewer — producing a real Notion-vs-Linear competitive analysis. The full execution trace is committed at [`examples/sample-trace.json`](examples/sample-trace.json): every tool call, argument, result, handoff, and token count.
+
 ---
 
 ## Development

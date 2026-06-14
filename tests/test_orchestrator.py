@@ -136,6 +136,21 @@ def test_max_iterations_per_agent_then_handoff(tmp_path):
     assert trace["agents"][0]["iterations"] <= 5
 
 
+def test_empty_downstream_conclusion_falls_back_to_best_partial(tmp_path):
+    # A weak model can hand off / conclude with empty text. That must not clobber
+    # substantive earlier output — the run should return the best partial.
+    p = write_pipeline(tmp_path, agents=THREE_AGENTS, start="researcher")
+    client = FakeLLMClient([
+        text_response("SUBSTANTIVE RESEARCH SUMMARY about the topic"),  # researcher
+        text_response(""),   # writer concludes empty
+        text_response(""),   # reviewer (terminal) concludes empty
+    ])
+    trace = run_pipeline(pipeline_path=p, goal="g", trace_path=None,
+                         assume_yes=True, client=client, catalog=_fallback_catalog())
+    assert trace["stopped_reason"] == StopReason.COMPLETED
+    assert "SUBSTANTIVE" in trace["final_output"]
+
+
 def test_secrets_redacted_in_trace(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-SECRET-TOKEN-XYZ")
     p = write_pipeline(tmp_path, agents=THREE_AGENTS, start="researcher")

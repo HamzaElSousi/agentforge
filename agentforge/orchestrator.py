@@ -212,17 +212,20 @@ def run_pipeline(
             stopped_reason = e.reason
             break
 
+        # An agent that concludes with empty text (a weak model dropping its
+        # task) must never clobber substantive earlier output — fall back to the
+        # best partial we have so the run returns useful content, not "(none)".
         if result.kind == "final":
-            final_output = result.output
+            final_output = result.output or final_output
             stopped_reason = at.stopped_reason or StopReason.COMPLETED
             break
         if result.kind == "stopped":
-            final_output = result.output
+            final_output = result.output or final_output
             stopped_reason = result.stopped_reason or StopReason.COMPLETED
             break
-        # handoff
-        incoming = result.output
-        final_output = result.output  # keep latest as partial
+        # handoff — carry the last non-empty context/partial forward
+        incoming = result.output or incoming
+        final_output = result.output or final_output
         if not result.handoff_to:
             break
         current = result.handoff_to

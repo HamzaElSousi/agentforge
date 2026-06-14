@@ -82,6 +82,7 @@ def run_pipeline(
     console: Optional[Console] = None,
     client=None,
     catalog: Optional[PricingCatalog] = None,
+    emit=None,
 ) -> dict:
     """Execute a pipeline against ``goal``. Returns the trace dict.
 
@@ -89,8 +90,12 @@ def run_pipeline(
     a pricing catalog) to drive the pipeline deterministically in tests or to
     embed AgentForge without its default provider wiring. When ``client`` is
     given, the API-key requirement and live pricing fetch are skipped.
+
+    ``emit`` is an optional callback receiving structured run events (dicts) —
+    used by the web UI to stream a run live. It is a no-op by default.
     """
     console = console or Console()
+    emit = emit or (lambda event: None)
     cfg = load_pipeline(pipeline_path)
     _import_builtin_tools()
 
@@ -162,6 +167,8 @@ def run_pipeline(
     handoff_cap = max(3, 2 * len(cfg.agents))
 
     console.print(f"[bold cyan]▶ running pipeline[/bold cyan] '{cfg.name}' — goal: {goal}")
+    emit({"type": "run_start", "pipeline": cfg.name, "goal": goal,
+          "agents": list(cfg.agents), "start": cfg.start})
 
     while True:
         visits[current] = visits.get(current, 0) + 1
@@ -180,6 +187,7 @@ def run_pipeline(
             raise SystemExit(2)
 
         console.print(f"  [bold]{current}[/bold] ({model}) — tools: {agent_cfg.tools or 'none'}")
+        emit({"type": "agent_start", "agent": current, "model": model, "tools": agent_cfg.tools})
         runner = AgentRunner(
             name=current,
             role=agent_cfg.role,
@@ -198,6 +206,7 @@ def run_pipeline(
             max_tokens=cfg.llm.max_tokens,
             context_token_cap=None,
             on_iteration=pipeline_iter_guard,
+            emit=emit,
         )
 
         try:
@@ -211,6 +220,12 @@ def run_pipeline(
             console.print(f"  [yellow]⛔ {e.reason}; returning partial result[/yellow]")
             stopped_reason = e.reason
             break
+
+        emit({"type": "agent_end", "agent": current, "kind": result.kind,
+              "output": (result.output or "")[:1000],
+              "handoff_to": result.handoff_to,
+              "stopped_reason": result.stopped_reason,
+              "cost_usd": round(at.cost_usd, 6)})
 
         # An agent that concludes with empty text (a weak model dropping its
         # task) must never clobber substantive earlier output — fall back to the
@@ -235,6 +250,9 @@ def run_pipeline(
         recorder.write(trace_path)
 
     _print_summary(console, recorder, trace_path)
+    emit({"type": "run_end", "stopped_reason": trace.stopped_reason,
+          "cost": trace.cost, "final_output": trace.final_output,
+          "trace": trace.to_dict()})
     return trace.to_dict()
 
 

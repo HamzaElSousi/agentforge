@@ -151,6 +151,32 @@ def test_empty_downstream_conclusion_falls_back_to_best_partial(tmp_path):
     assert "SUBSTANTIVE" in trace["final_output"]
 
 
+def test_emit_streams_lifecycle_events(tmp_path):
+    # The web UI relies on these structured events; assert they fire in order.
+    p = write_pipeline(tmp_path, agents=THREE_AGENTS, start="researcher")
+    client = FakeLLMClient([
+        tool_response("web_search", {"query": "facts"}),
+        text_response("collected"),
+        text_response("written"),
+        text_response("FINAL"),
+    ])
+    events = []
+    run_pipeline(pipeline_path=p, goal="g", trace_path=None, assume_yes=True,
+                 client=client, catalog=_fallback_catalog(), emit=events.append)
+    types = [e["type"] for e in events]
+    assert types[0] == "run_start"
+    assert types[-1] == "run_end"
+    assert "agent_start" in types and "agent_end" in types
+    assert "llm_result" in types and "tool_call" in types
+    # run_end carries the full trace and final cost
+    end = events[-1]
+    assert end["trace"]["pipeline"] == "t"
+    assert "total_usd" in end["cost"]
+    # a tool_call event carries the tool name + outcome
+    tc = next(e for e in events if e["type"] == "tool_call")
+    assert tc["tool"] == "web_search" and tc["outcome"] == "approved"
+
+
 def test_secrets_redacted_in_trace(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-SECRET-TOKEN-XYZ")
     p = write_pipeline(tmp_path, agents=THREE_AGENTS, start="researcher")

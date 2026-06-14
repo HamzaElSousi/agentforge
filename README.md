@@ -20,6 +20,21 @@ It works with any [OpenRouter](https://openrouter.ai) model and direct Anthropic
 
 ---
 
+## 🖥️ Live dashboard — no commands to remember
+
+Pick a pipeline, type a goal, hit Run, and watch the agents, tool calls, permission decisions, and **cost** stream in real time:
+
+![AgentForge live dashboard](docs/agentforge-demo.gif)
+
+```bash
+pip install -e ".[web]"
+agentforge serve            # → http://127.0.0.1:8000
+```
+
+The dashboard lists your `examples/*.yaml`, lets you edit the YAML inline, streams every step live, and offers the full `trace.json` as a download. (Recorded above: a real 3-agent run on `deepseek/deepseek-v4-flash` — note the live cost meter and the workspace-jail blocking an absolute-path write.)
+
+---
+
 ## ⚡ Bring your own API key
 
 > AgentForge ships with **no API key** and never calls anyone else's account. You supply your **own** `OPENROUTER_API_KEY` (or Anthropic/OpenAI), it lives in your gitignored `.env`, and you are billed by your provider — typically **~$0.01–0.03 per 3-agent run**. Prefer zero cost? Set `provider: ollama` and run fully offline against a local model.
@@ -275,7 +290,7 @@ pip install -e ".[dev]"
 pytest tests/ -v          # ~250 tests, zero real API calls (scripted fake LLM client)
 ```
 
-Tests use a scripted `FakeLLMClient`, so the whole suite is deterministic and offline. Optional extras: `pip install -e ".[anthropic,openai,docker,e2b]"`.
+Tests use a scripted `FakeLLMClient`, so the whole suite is deterministic and offline. Optional extras: `pip install -e ".[web,anthropic,openai,docker,e2b]"`.
 
 ---
 

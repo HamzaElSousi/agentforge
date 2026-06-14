@@ -35,6 +35,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = ["fastapi>=0.110", "uvicorn>=0.29"]
 anthropic = ["anthropic>=0.39"]
 openai = ["openai>=1.40"]
 docker = ["docker>=7.1"]

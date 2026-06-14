@@ -151,6 +151,7 @@ class AgentRunner:
         context_token_cap: Optional[int] = None,
         repeat_threshold: int = 3,
         on_iteration=None,
+        emit=None,
     ) -> None:
         self.name = name
         self.role = role
@@ -171,6 +172,7 @@ class AgentRunner:
         self.repeats = RepeatTracker(repeat_threshold)
         self.native = bool(getattr(client, "supports_native_tools", True))
         self.on_iteration = on_iteration  # callback(global) for pipeline iter cap
+        self.emit = emit or (lambda event: None)  # structured event sink (web UI / observers)
 
     # -- prompt construction ------------------------------------------------ #
 
@@ -236,6 +238,16 @@ class AgentRunner:
             self.tr.cost_usd += cost_usd(resp.usage, pricing)
             self.budget.check_after()
 
+            self.emit({
+                "type": "llm_result",
+                "agent": self.name,
+                "iteration": it,
+                "text": (resp.text or "")[:500],
+                "cost_usd": round(self.budget.total_usd, 6),
+                "prompt_tokens": resp.usage.prompt_tokens,
+                "completion_tokens": resp.usage.completion_tokens,
+            })
+
             last_text = resp.text or last_text
 
             # Decide the action.
@@ -255,6 +267,15 @@ class AgentRunner:
                     self.tr.stopped_reason = StopReason.REPEATED_ACTION
                     return AgentResult("stopped", last_text, self.handoff_to, StopReason.REPEATED_ACTION)
                 observation = self._execute_tool(tc, reasoning=resp.text or "")
+                rec = self.tr.tool_calls[-1] if self.tr.tool_calls else None
+                self.emit({
+                    "type": "tool_call",
+                    "agent": self.name,
+                    "tool": tc.name,
+                    "args": tc.arguments,
+                    "outcome": rec.outcome if rec else "approved",
+                    "result": observation[:400],
+                })
                 if self.native and tc.id and not tc.id.startswith("text-"):
                     messages.append(
                         Message(role="tool", content=observation, tool_call_id=tc.id, name=tc.name)

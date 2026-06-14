@@ -134,5 +134,25 @@ def estimate(
     )
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind host."),
+    port: int = typer.Option(8000, help="Bind port."),
+    examples: Path = typer.Option(
+        Path("examples"), help="Directory of example pipeline YAMLs to list in the UI."
+    ),
+) -> None:
+    """Launch the web dashboard — pick a pipeline, set a goal, watch it run live."""
+    try:
+        from agentforge.web.server import serve as _serve
+    except RuntimeError as e:
+        err_console.print(f"[bold red]✗[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold green]🛠️  AgentForge dashboard[/bold green] → "
+                  f"[bold]http://{host}:{port}[/bold]  (Ctrl-C to stop)")
+    _serve(host=host, port=port, examples_dir=examples)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()

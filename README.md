@@ -24,7 +24,7 @@ It works with any [OpenRouter](https://openrouter.ai) model and direct Anthropic
 
 Pick a pipeline, type a goal, hit Run, and watch the agents, tool calls, permission decisions, and **cost** stream in real time:
 
-![AgentForge live dashboard](docs/agentforge-demo.gif)
+![AgentForge live dashboard](https://raw.githubusercontent.com/HamzaElSousi/agentforge/main/docs/agentforge-demo.gif)
 
 ```bash
 pip install -e ".[web]"

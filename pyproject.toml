@@ -55,6 +55,10 @@ agentforge = "agentforge.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["agentforge"]
 
+[tool.hatch.build.targets.sdist]
+# Keep the published sdist lean — the demo GIF is served from GitHub raw, not the package.
+exclude = ["/docs", "/.github", "/tests"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

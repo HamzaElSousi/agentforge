@@ -8,9 +8,9 @@ Living build tracker. The [PRD.md](PRD.md) is the design contract; this file tra
 
 ## Current State
 
-- **Phase:** Phases 0–9 complete — **live 3-agent E2E passed**. Remaining: public push + profile README update.
+- **Phase:** ✅ **V1 complete.** All 9 phases built, live-verified, public, and CI-green.
 - **Last updated:** 2026-06-14
-- **Overall:** 9 / 9 V1 phases built; live-verified against a real model.
+- **Overall:** 9 / 9 V1 phases done. Repo public at https://github.com/HamzaElSousi/agentforge — **CI green: 258 tests pass on Python 3.11 + 3.12.** Profile README series table updated.
 - **Live E2E result:** the 3-agent research pipeline (researcher → writer → reviewer) ran **end-to-end against a real local model** (`gemma4:e4b` via Ollama), `stopped_reason: completed`, 7993 prompt + 3230 completion tokens, producing a real Notion-vs-Linear competitive analysis with a full `trace.json` (saved as `examples/sample-trace.json`). The run caught + fixed 3 real bugs offline tests missed: Ollama endpoint normalization, Ollama tool-call argument serialization, and web tools wrongly gated by `network:false` + the deprecated `duckduckgo_search` package (→ `ddgs`).
 - **Paid-provider note:** OpenRouter path proven via keyless live catalog/estimate + an offline-mocked request/parse test; a paid OpenRouter live run is one command away once `OPENROUTER_API_KEY` is in `.env`.
 - **Tests:** ~250-test pytest suite (zero real API). **Run with** `.venv/bin/python -m pytest tests/ -v`.
@@ -32,7 +32,7 @@ Sequential multi-agent pipelines defined in YAML, with provider-agnostic models,
 | 6 | Permissions & HITL | risk classification, approval prompts (approve/deny/edit/always), CI-safe non-interactive policy, trace audit | ✅ |
 | 7 | ReAct agent loop | native tool-calling + text-ReAct fallback; context truncation/trimming; per-agent loop caps | ✅ |
 | 8 | Orchestrator | handoffs, budget enforcement, loop-safety guards, `trace.json` writer | ✅ |
-| 9 | CLI, examples, docs, live E2E | 4 example pipelines ✅, README + Mermaid ✅, live 3-agent run ✅ (Ollama), public GitHub repo ⬜, profile update ⬜ | 🟦 |
+| 9 | CLI, examples, docs, live E2E | 4 example pipelines ✅, README + Mermaid ✅, live 3-agent run ✅ (Ollama), public GitHub repo ✅, profile update ✅, CI green (258 tests) ✅ | ✅ |
 
 **V1 done = all PRD success criteria met:** 3-agent pipeline runs end-to-end on a real model; trace shows tool calls + tokens + cost; works across ≥2 providers + Ollama; custom tool in <10 lines; budget cap aborts cleanly; sandbox blocks traversal/SSRF/timeouts; permission gate pauses correctly and never hangs in CI; loop caps exit gracefully.
 

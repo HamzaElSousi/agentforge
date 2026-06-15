@@ -99,9 +99,15 @@ start: planner
    cycles are rejected at config load + by a runtime deadlock guard. Pure refactor —
    all v1 sequential pipelines/tests unchanged (`run_pipeline` dispatches on
    `dag_mode`). Covered by `tests/test_dag.py`; example `examples/research-dag.yaml`.
-2. **Parallel execution:** add the thread pool + thread-safe budget/blackboard +
-   cancellation. Tests with the scripted `FakeLLMClient` assert N branches run,
-   the join waits for all, and a mid-run budget abort cancels cleanly.
+2. ✅ **Parallel execution — DONE:** `_run_dag_parallel` (`orchestrator.py`) runs the DAG
+   on a `ThreadPoolExecutor` (driver-thread ready-set scheduler) when
+   `budget.max_parallel > 1` (default 4); `max_parallel <= 1` keeps the deterministic
+   sequential path. Thread-safety added where state is shared: `BudgetGuard` lock,
+   `TraceRecorder.add_agent` lock, notes lock (`tools/files.py`), atomic iteration guard.
+   Cooperative cancellation via a `cancel_event` checked in `pipeline_iter_guard` — the
+   first real stop (budget/iteration/wall-clock) winds the others down gracefully.
+   Covered by `tests/test_parallel.py` (incl. a `threading.Barrier` proof of real
+   concurrency) + a thread-safe agent-routed `RoutingFakeLLMClient`.
 3. **Fan-out:** `fan_out.over` expansion + `max_fan_out`. Live E2E: 1 planner →
    3 parallel researchers → 1 synthesizer.
 4. **UI:** parallel lanes in the dashboard (the event schema already supports it).

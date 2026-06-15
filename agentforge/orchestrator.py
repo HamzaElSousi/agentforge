@@ -12,7 +12,9 @@ DAG-shaped so V2 can schedule independent agents in parallel without a rewrite.
 from __future__ import annotations
 
 import os
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Optional
 
@@ -147,13 +149,22 @@ def run_pipeline(
             base_url=cfg.llm.base_url, timeout=cfg.llm.timeout_s,
         )
 
-    # Pipeline-level guards.
+    # Pipeline-level guards. ``cancel_event`` lets one branch's stop (budget,
+    # iteration cap, wall-clock) signal the others to wind down (parallel DAG).
     t0 = time.monotonic()
     state = {"total_iters": 0}
+    iter_lock = threading.Lock()
+    cancel_event = threading.Event()
 
     def pipeline_iter_guard() -> None:
-        state["total_iters"] += 1
-        if state["total_iters"] > cfg.budget.max_total_iterations:
+        # Checked at the top of every ReAct iteration (via AgentRunner.on_iteration),
+        # so it is also the cooperative-cancellation point for in-flight branches.
+        if cancel_event.is_set():
+            raise PipelineStop(StopReason.CANCELLED)
+        with iter_lock:
+            state["total_iters"] += 1
+            n = state["total_iters"]
+        if n > cfg.budget.max_total_iterations:
             raise PipelineStop(StopReason.MAX_TOTAL_ITERATIONS)
         if cfg.budget.wall_clock_s and (time.monotonic() - t0) > cfg.budget.wall_clock_s:
             raise PipelineStop(StopReason.WALL_CLOCK)
@@ -195,7 +206,11 @@ def run_pipeline(
           "agents": list(cfg.agents), "start": cfg.start,
           "mode": "dag" if dag_mode else "sequential"})
 
-    if dag_mode:
+    if dag_mode and cfg.budget.max_parallel > 1:
+        stopped_reason, final_output = _run_dag_parallel(
+            cfg, run_agent, console, cfg.budget.max_parallel, cancel_event
+        )
+    elif dag_mode:
         stopped_reason, final_output = _run_dag(cfg, run_agent, console)
     else:
         stopped_reason, final_output = _run_sequential(cfg, run_agent, console)
@@ -311,6 +326,79 @@ def _run_dag(cfg, run_agent, console: Console) -> tuple[str, str]:
             final_output = result.output
 
     return StopReason.COMPLETED, (outputs.get(terminal_name) or final_output)
+
+
+def _run_dag_parallel(cfg, run_agent, console: Console, max_workers: int,
+                      cancel_event: threading.Event) -> tuple[str, str]:
+    """V2 Phase 2: run the DAG on a thread pool so independent branches execute
+    concurrently. A ready-set scheduler submits in-degree-0 agents; as each
+    finishes, its dependents' in-degrees drop and any newly-ready agent is
+    submitted. The join (terminal) agent runs only once all its deps complete.
+
+    Scheduling state (``outputs``, ``indeg``, ``in_flight``) is touched only on
+    this driver thread — workers just run ``run_agent`` — so the cross-thread
+    shared state is limited to the already-locked budget/trace/notes/iteration
+    guard. On the first real stop (budget/iteration/wall-clock) the driver sets
+    ``cancel_event`` and stops submitting; in-flight branches wind down at their
+    next iteration. Every stop is non-fatal → partial result + trace.
+    """
+    names = list(cfg.agents)
+    indeg = {n: len(cfg.agents[n].depends_on) for n in names}
+    adj: dict[str, list[str]] = {n: [] for n in names}
+    for n in names:
+        for d in cfg.agents[n].depends_on:
+            adj[d].append(n)
+    terminal_name = next((n for n, a in cfg.agents.items() if a.terminal), None)
+
+    outputs: dict[str, str] = {}
+    final_output = ""
+    first_stop: Optional[str] = None
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="agentforge") as ex:
+        in_flight: dict = {}  # Future -> agent name
+
+        def submit(name: str) -> None:
+            incoming = _package_deps(cfg.agents[name].depends_on, outputs)
+            in_flight[ex.submit(run_agent, name, incoming)] = name
+
+        for n in [n for n in names if indeg[n] == 0]:
+            submit(n)
+
+        while in_flight:
+            done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
+            newly_ready: list[str] = []
+            for fut in done:
+                name = in_flight.pop(fut)
+                try:
+                    result, _at = fut.result()
+                except BudgetExceeded as e:
+                    if first_stop is None:
+                        first_stop = StopReason.BUDGET_EXCEEDED
+                        console.print(f"  [yellow]⛔ budget cap hit (${e.cap}); cancelling remaining branches[/yellow]")
+                        cancel_event.set()
+                    continue
+                except PipelineStop as e:
+                    if e.reason != StopReason.CANCELLED and first_stop is None:
+                        first_stop = e.reason
+                        console.print(f"  [yellow]⛔ {e.reason}; cancelling remaining branches[/yellow]")
+                        cancel_event.set()
+                    continue
+                outputs[name] = result.output or ""
+                if result.output:
+                    final_output = result.output
+                for m in adj[name]:
+                    indeg[m] -= 1
+                    if indeg[m] == 0:
+                        newly_ready.append(m)
+            if first_stop is None:
+                for m in newly_ready:
+                    submit(m)
+            # if cancelled, stop submitting; let in-flight branches drain
+
+    reason = first_stop or StopReason.COMPLETED
+    if terminal_name and outputs.get(terminal_name):
+        final_output = outputs[terminal_name]
+    return reason, final_output
 
 
 def _estimate(cfg, goal: str, catalog: PricingCatalog, console: Console) -> dict:

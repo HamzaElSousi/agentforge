@@ -66,6 +66,7 @@ class LLMConfig(BaseModel):
 class BudgetConfig(BaseModel):
     max_usd_per_run: float = Field(default=0.25, gt=0)
     max_total_iterations: int = Field(default=30, gt=0)
+    max_parallel: int = Field(default=4, gt=0)  # DAG mode: max agent branches to run concurrently (1 = sequential)
     wall_clock_s: Optional[float] = Field(default=None, gt=0)
 
     model_config = {"extra": "forbid"}

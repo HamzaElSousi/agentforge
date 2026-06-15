@@ -9,6 +9,7 @@ from the environment) is replaced with ``***`` anywhere it appears.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -97,10 +98,12 @@ class TraceRecorder:
         self.trace = Trace(pipeline=pipeline, goal=goal)
         self._secrets = [s for s in (secrets or []) if s]
         self._t0 = time.monotonic()
+        self._lock = threading.Lock()
 
     def add_agent(self, name: str, model: str) -> AgentTrace:
         at = AgentTrace(name=name, model=model)
-        self.trace.agents.append(at)
+        with self._lock:
+            self.trace.agents.append(at)
         return at
 
     def finalize(self, *, stopped_reason: str, final_output: str) -> Trace:

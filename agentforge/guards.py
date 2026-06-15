@@ -14,8 +14,9 @@ Kept in their own module (no heavy imports) so both ``agent.py`` and
 from __future__ import annotations
 
 import json
+import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from agentforge.cost import ModelPricing, PricingCatalog, cost_usd
@@ -40,6 +41,7 @@ class StopReason:
     REPEATED_ACTION = "repeated_action"
     HANDOFF_CYCLE = "handoff_cycle"
     WALL_CLOCK = "wall_clock_timeout"
+    CANCELLED = "cancelled"  # a parallel branch stopped because another branch tripped a guard
     ERROR = "error"
 
 
@@ -56,6 +58,7 @@ class BudgetGuard:
     catalog: PricingCatalog
     assumed_completion_tokens: int = 1024
     total_usd: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def _pricing(self, model: str) -> ModelPricing:
         p = self.catalog.get(model)
@@ -72,19 +75,22 @@ class BudgetGuard:
 
     def check_before(self, prompt_tokens: int, model: str) -> None:
         """Raise if making this call could cross the cap."""
-        projected = self.total_usd + self.estimate(prompt_tokens, model)
-        if projected > self.cap_usd:
-            raise BudgetExceeded(projected, self.cap_usd)
+        with self._lock:
+            projected = self.total_usd + self.estimate(prompt_tokens, model)
+            if projected > self.cap_usd:
+                raise BudgetExceeded(projected, self.cap_usd)
 
     def record(self, usage: Usage, model: str) -> float:
         """Add the actual cost of a completed call; return the new total."""
-        self.total_usd += cost_usd(usage, self._pricing(model))
-        return self.total_usd
+        with self._lock:
+            self.total_usd += cost_usd(usage, self._pricing(model))
+            return self.total_usd
 
     def check_after(self) -> None:
         """Raise if the measured total has crossed the cap."""
-        if self.total_usd > self.cap_usd:
-            raise BudgetExceeded(self.total_usd, self.cap_usd)
+        with self._lock:
+            if self.total_usd > self.cap_usd:
+                raise BudgetExceeded(self.total_usd, self.cap_usd)
 
 
 class RepeatTracker:

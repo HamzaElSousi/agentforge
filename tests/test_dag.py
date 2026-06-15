@@ -50,7 +50,7 @@ def _cat():
 
 
 def test_topological_order_start_first(tmp_path):
-    p = write_pipeline(tmp_path, agents=DAG_AGENTS, start="planner")
+    p = write_pipeline(tmp_path, agents=DAG_AGENTS, start="planner", max_parallel=1)
     cfg = load_pipeline(p)
     order = _topological_order(cfg)
     assert order[0] == "planner"
@@ -62,7 +62,7 @@ def test_topological_order_start_first(tmp_path):
 
 
 def test_dag_completes_and_terminal_is_final(tmp_path):
-    p = write_pipeline(tmp_path, agents=DAG_AGENTS, start="planner")
+    p = write_pipeline(tmp_path, agents=DAG_AGENTS, start="planner", max_parallel=1)
     client = FakeLLMClient([
         text_response("PLAN"), text_response("RESULT_A"),
         text_response("RESULT_B"), text_response("MERGED FINAL"),
@@ -75,7 +75,7 @@ def test_dag_completes_and_terminal_is_final(tmp_path):
 
 
 def test_join_agent_receives_all_dependency_outputs(tmp_path):
-    p = write_pipeline(tmp_path, agents=DAG_AGENTS, start="planner")
+    p = write_pipeline(tmp_path, agents=DAG_AGENTS, start="planner", max_parallel=1)
     client = FakeLLMClient([
         text_response("PLAN"), text_response("RESULT_A"),
         text_response("RESULT_B"), text_response("MERGED"),
@@ -87,7 +87,7 @@ def test_join_agent_receives_all_dependency_outputs(tmp_path):
 
 
 def test_dag_records_depends_on_and_branch_id(tmp_path):
-    p = write_pipeline(tmp_path, agents=DAG_AGENTS, start="planner")
+    p = write_pipeline(tmp_path, agents=DAG_AGENTS, start="planner", max_parallel=1)
     client = FakeLLMClient([text_response(x) for x in ("PLAN", "A", "B", "M")])
     trace = run_pipeline(pipeline_path=p, goal="g", trace_path=None,
                          assume_yes=True, client=client, catalog=_cat())
@@ -108,14 +108,14 @@ def test_cycle_is_rejected_at_load(tmp_path):
     tools: []
     depends_on: [a]
 """
-    p = write_pipeline(tmp_path, agents=cyclic, start="a")
+    p = write_pipeline(tmp_path, agents=cyclic, start="a", max_parallel=1)
     with pytest.raises(ConfigError, match="cycle"):
         load_pipeline(p)
 
 
 def test_dag_budget_abort_is_graceful(tmp_path):
     cat = PricingCatalog({"fake/model": ModelPricing(2e-5, 2e-5)})
-    p = write_pipeline(tmp_path, cap=0.05, agents=DAG_AGENTS, start="planner")
+    p = write_pipeline(tmp_path, cap=0.05, agents=DAG_AGENTS, start="planner", max_parallel=1)
     # every agent keeps acting with big-token calls -> cap trips mid-DAG
     client = FakeLLMClient([
         tool_response("noop", {"i": i}, prompt_tokens=3000, completion_tokens=3000)

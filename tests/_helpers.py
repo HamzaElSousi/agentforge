@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 _MINIMAL = """\
 name: {name}
@@ -12,7 +13,7 @@ llm:
   api_key_env: OPENROUTER_API_KEY
 budget:
   max_usd_per_run: {cap}
-  max_total_iterations: {total_iters}
+  max_total_iterations: {total_iters}{max_parallel_line}
 sandbox:
   backend: subprocess
 permissions:
@@ -41,12 +42,21 @@ def write_pipeline(
     non_interactive: str = "deny",
     agents: str,
     start: str,
+    max_parallel: Optional[int] = None,
 ) -> Path:
+    # Inject max_parallel into the budget block only when explicitly provided.
+    # When None, omit the line entirely so the config default of 4 applies.
+    if max_parallel is not None:
+        max_parallel_line = f"\n  max_parallel: {max_parallel}"
+    else:
+        max_parallel_line = ""
+
     text = _MINIMAL.format(
         name=name,
         model=model,
         cap=cap,
         total_iters=total_iters,
+        max_parallel_line=max_parallel_line,
         mode=mode,
         auto_approve=auto_approve or [],
         require_approval=require_approval or [],

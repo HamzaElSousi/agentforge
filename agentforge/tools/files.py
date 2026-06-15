@@ -12,10 +12,13 @@ persistent within a run but cleanly separated from user-created files.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
 from agentforge.tools.registry import ToolContext, tool
+
+_NOTES_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +226,8 @@ def save_note(ctx: ToolContext, key: str, content: str) -> str:
         note_relpath = f".notes/{key}.txt"
         target = ws.resolve(note_relpath)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        with _NOTES_LOCK:
+            target.write_text(content, encoding="utf-8")
         return f"Note '{key}' saved ({len(content)} chars)."
     except ValueError as exc:
         return f"[save_note error] {exc}"
@@ -252,9 +256,10 @@ def read_note(ctx: ToolContext, key: str) -> str:
     try:
         note_relpath = f".notes/{key}.txt"
         target = ws.resolve(note_relpath)
-        if not target.exists():
-            return f"[read_note error] No note found for key '{key}'."
-        return target.read_text(encoding="utf-8", errors="replace")
+        with _NOTES_LOCK:
+            if not target.exists():
+                return f"[read_note error] No note found for key '{key}'."
+            return target.read_text(encoding="utf-8", errors="replace")
     except ValueError as exc:
         return f"[read_note error] {exc}"
     except OSError as exc:

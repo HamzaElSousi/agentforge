@@ -35,9 +35,19 @@
   .hint{color:var(--dim);font-size:11.5px;margin-top:8px;line-height:1.45}
   .empty{color:var(--dim);text-align:center;margin-top:90px}
   .empty .big{font-size:46px;opacity:.5}
-  .agent{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden}
+  /* lanes: concurrent agents sit side-by-side and wrap to next row */
+  .lanes{display:flex;flex-wrap:wrap;align-items:flex-start;gap:14px;margin-bottom:8px}
+  .agent{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;
+    flex:1 1 310px;min-width:300px;max-width:520px;align-self:stretch}
   .agent.active{border-color:var(--accent)}
   .agent.done{border-color:var(--green)}
+  /* fan-out group: clusters all instances of one template */
+  .fanout{flex:1 1 100%;border:1px dashed var(--accent2);border-radius:10px;padding:10px 12px 4px;
+    background:rgba(188,140,255,.04)}
+  .fanout > .fhead{font-family:var(--mono);font-size:11.5px;color:var(--accent2);
+    text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px}
+  .fanout > .finstances{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px}
+  .fanout .agent{flex:1 1 280px;min-width:260px}
   .ahead{display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--panel2)}
   .ahead .name{font-weight:700;font-size:15px}
   .ahead .model{font-family:var(--mono);font-size:11.5px;color:var(--accent2);background:#1f2937;
@@ -46,7 +56,7 @@
   .ahead .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);animation:pulse 1s infinite}
   .agent.done .dot{background:var(--green);animation:none}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-  .body{padding:6px 14px 12px}
+  .body{padding:6px 14px 12px;max-height:460px;overflow:auto}
   .think{color:var(--dim);font-size:12.5px;font-style:italic;padding:6px 0;border-bottom:1px dashed var(--border)}
   .tool{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid #21262d;align-items:flex-start}
   .tool:last-child{border-bottom:0}
@@ -94,7 +104,10 @@
 </div>
 <script>
 const $ = s => document.querySelector(s);
-const feed = $('#feed'); let agents = {}, current = null;
+const feed = $('#feed');
+let agents = {};      // agent name (incl. fan-out instance like "researcher#0") -> card element
+let lanes = null;     // wrapping flex container that holds lanes + fan-out groups
+let groups = {};      // template name -> { box, instances } for fan-out grouping
 
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function md(s){ // tiny, safe markdown -> html
@@ -120,23 +133,43 @@ async function loadPipelines(){
     else $('#goal').value="Research Notion's pricing and positioning vs Linear"; }
   sel.onchange = ()=>{ $('#yaml').value = sel.selectedOptions[0]._yaml; };
 }
+function laneContainer(){
+  if(!lanes){ lanes=document.createElement('div'); lanes.className='lanes'; feed.appendChild(lanes); }
+  return lanes;
+}
+// Returns the parent into which a card for `name` should be placed.
+// For fan-out instances ("template#N") this is a lazily-created group container.
+function parentFor(name){
+  const i=name.indexOf('#');
+  if(i<0) return laneContainer();
+  const tpl=name.slice(0,i);
+  let g=groups[tpl];
+  if(!g){
+    const box=document.createElement('div'); box.className='fanout';
+    box.innerHTML=`<div class="fhead">fan-out: ${esc(tpl)}</div><div class="finstances"></div>`;
+    laneContainer().appendChild(box);
+    g=groups[tpl]={box, instances:box.querySelector('.finstances')};
+  }
+  return g.instances;
+}
 function agentCard(name,model,tools){
   const el=document.createElement('div'); el.className='agent active';
   el.innerHTML=`<div class="ahead"><span class="dot"></span><span class="name">${esc(name)}</span>
-    <span class="model">${esc(model)}</span><span class="st">running…</span></div><div class="body"></div>`;
-  feed.appendChild(el); el.scrollIntoView({behavior:'smooth',block:'end'}); return el;
+    <span class="model">${esc(model||'')}</span><span class="st">running…</span></div><div class="body"></div>`;
+  parentFor(name).appendChild(el); el.scrollIntoView({behavior:'smooth',block:'end'}); return el;
 }
 function handle(e){
-  if(e.type==='run_start'){ feed.innerHTML=''; agents={}; setCost(0,0,0);
+  if(e.type==='run_start'){ feed.innerHTML=''; agents={}; lanes=null; groups={}; setCost(0,0,0);
     const h=document.createElement('div'); h.className='think';
-    h.innerHTML=`<b style="color:var(--accent)">▶ ${esc(e.pipeline)}</b> &nbsp; goal: ${esc(e.goal)} &nbsp; agents: ${e.agents.map(esc).join(' → ')}`;
+    const sep = e.mode==='dag' ? ' ∥ ' : ' → ';
+    h.innerHTML=`<b style="color:var(--accent)">▶ ${esc(e.pipeline)}</b> &nbsp; goal: ${esc(e.goal)} &nbsp; agents: ${(e.agents||[]).map(esc).join(sep)}`;
     feed.appendChild(h);
-  } else if(e.type==='agent_start'){ current=agentCard(e.agent,e.model,e.tools); agents[e.agent]=current;
+  } else if(e.type==='agent_start'){ agents[e.agent]=agentCard(e.agent,e.model,e.tools);
   } else if(e.type==='llm_result'){ setCost(e.cost_usd,e.prompt_tokens,e.completion_tokens);
-    if(current){ const st=current.querySelector('.st'); st.textContent='iter '+e.iteration+' · $'+e.cost_usd.toFixed(5);
+    const card=agents[e.agent]; if(card){ const st=card.querySelector('.st'); st.textContent='iter '+e.iteration+' · $'+(e.cost_usd||0).toFixed(5);
       if(e.text&&e.text.trim()){ const t=document.createElement('div');t.className='think';t.textContent='💭 '+e.text.slice(0,220);
-        current.querySelector('.body').appendChild(t);} }
-  } else if(e.type==='tool_call'){ if(!current)return; const b=current.querySelector('.body');
+        card.querySelector('.body').appendChild(t);} }
+  } else if(e.type==='tool_call'){ const card=agents[e.agent]; if(!card)return; const b=card.querySelector('.body');
     const d=document.createElement('div'); d.className='tool';
     const oc=e.outcome||'approved';
     d.innerHTML=`<span class="tn">${esc(e.tool)}</span><div class="args">${esc(JSON.stringify(e.args)).slice(0,160)}

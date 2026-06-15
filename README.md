@@ -18,7 +18,7 @@ It works with any [OpenRouter](https://openrouter.ai) model and direct Anthropic
 | Sandbox + permissions | Add-on / none | **Built-in, tiered** |
 | Lines to grok the core | thousands | **~1.5k** |
 
-> **Status:** V1 shipped & live-verified; V2 DAG pipelines + parallel execution have landed (fan-out is in progress).
+> **Status:** V1 shipped & live-verified; V2 DAG pipelines, parallel execution, and dynamic fan-out have all landed (with live parallel lanes in the dashboard).
 
 ---
 
@@ -254,7 +254,13 @@ start: planner
 agentforge run examples/research-dag.yaml --goal "Compare Notion and Linear" --yes
 ```
 
-> Next up: **fan-out** (one agent → N dynamically-spawned workers over a list it produced) is the next increment — V2 Phase 3, in progress.
+**Fan-out** goes further: an agent produces a list and the runtime spawns one worker **instance per item** (`fan_out: {to, max}`), runs them concurrently, and a join merges them. The dashboard renders the concurrent instances as side-by-side lanes under a fan-out group:
+
+![AgentForge fan-out: parallel instances in the dashboard](https://raw.githubusercontent.com/HamzaElSousi/agentforge/main/docs/agentforge-fanout-lanes.gif)
+
+```bash
+agentforge run examples/fanout-research.yaml --goal "Compare Notion, Linear, and Asana for product teams" --yes
+```
 
 ---
 
@@ -363,7 +369,7 @@ Tests use a scripted `FakeLLMClient`, so the whole suite is deterministic and of
 
 ## Limitations
 
-- **V2 DAG mode is live** — agents can `depends_on` each other and independent branches run in parallel (`budget.max_parallel`) with fan-in joins (see [Parallel pipelines](#-parallel-pipelines-dag-mode)). Dynamic **fan-out** (one agent → N workers) is the remaining V2 increment, in progress.
+- **V2 DAG mode is live** — agents can `depends_on` each other and independent branches run in parallel (`budget.max_parallel`) with fan-in joins, plus dynamic **fan-out** (one agent → N concurrent workers) (see [Parallel pipelines](#-parallel-pipelines-dag-mode)).
 - The `subprocess` sandbox blocks network via a socket guard and caps resources via `rlimit` (POSIX) — for hostile code use the `docker` or `e2b` backend for real isolation.
 - Cost figures depend on provider-reported token counts; the pre-call cap is conservative but a single in-flight call can overshoot slightly unless `llm.max_tokens` bounds completion.
 

@@ -116,7 +116,10 @@ start: planner
    at load). Covered by `tests/test_fanout.py`; example `examples/fanout-research.yaml`. (Design
    note: the list comes from the agent's *output*, not a named note — simpler than the original
    `over:` sketch and needs no extra config.)
-4. **UI:** parallel lanes in the dashboard (the event schema already supports it).
+4. ✅ **UI — DONE:** the web dashboard routes events by `agent`/`branch_id` to per-agent
+   cards and lays concurrent branches out as side-by-side **lanes**; fan-out instances cluster
+   under a labeled group (frontend-only change in `web/static/index.html`). Verified live with
+   `examples/fanout-research.yaml` — recorded in the README (`docs/agentforge-fanout-lanes.gif`).
 
 ## 6. Risks / open questions
 - **Determinism in tests:** concurrent ordering is non-deterministic — assert on

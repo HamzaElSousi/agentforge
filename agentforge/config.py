@@ -93,12 +93,26 @@ class PermissionsConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class FanOutConfig(BaseModel):
+    """V2 fan-out: this agent produces a list, and the runtime spawns one
+    instance of ``to`` per item (capped at ``max``), running them in parallel.
+    The ``to`` agent is a *template* — it must ``depends_on`` this agent and is
+    never run on its own; a join agent (``depends_on: [to]``) merges the results.
+    """
+
+    to: str
+    max: int = Field(default=8, gt=0)
+
+    model_config = {"extra": "forbid"}
+
+
 class AgentConfig(BaseModel):
     role: str
     tools: list[str] = Field(default_factory=list)
     model: Optional[str] = None  # per-agent override
     handoff_to: Optional[str] = None  # v1 sequential edge
-    depends_on: list[str] = Field(default_factory=list)  # reserved for V2 DAG
+    depends_on: list[str] = Field(default_factory=list)  # V2 DAG dependencies
+    fan_out: Optional[FanOutConfig] = None  # V2 fan-out: spawn N instances of fan_out.to
     terminal: bool = False
     max_iterations: int = Field(default=10, gt=0)
     wall_clock_s: Optional[float] = Field(default=None, gt=0)
@@ -145,6 +159,17 @@ class PipelineConfig(BaseModel):
                 if dep not in names:
                     raise ValueError(
                         f"agent {agent_name!r} depends_on unknown agent {dep!r}"
+                    )
+            if agent.fan_out:
+                to = agent.fan_out.to
+                if to not in names:
+                    raise ValueError(
+                        f"agent {agent_name!r} fans out to unknown agent {to!r}"
+                    )
+                if agent_name not in self.agents[to].depends_on:
+                    raise ValueError(
+                        f"fan-out target {to!r} must 'depends_on: [{agent_name}]' "
+                        f"(it is a template spawned by {agent_name!r})"
                     )
 
         # DAG mode (V2): if any agent uses depends_on, the graph must be acyclic.

@@ -108,8 +108,14 @@ start: planner
    first real stop (budget/iteration/wall-clock) winds the others down gracefully.
    Covered by `tests/test_parallel.py` (incl. a `threading.Barrier` proof of real
    concurrency) + a thread-safe agent-routed `RoutingFakeLLMClient`.
-3. **Fan-out:** `fan_out.over` expansion + `max_fan_out`. Live E2E: 1 planner →
-   3 parallel researchers → 1 synthesizer.
+3. ✅ **Fan-out — DONE:** `AgentConfig.fan_out: {to, max}` (`config.py`). A fan-out agent's
+   output is parsed into a list (`_parse_list`: JSON array or bullet/numbered lines, capped at
+   `max`); the scheduler spawns one instance of the `to` template per item (`to#0..to#k-1`),
+   runs them on the pool, and the join (`depends_on: [to]`) waits for the whole group via
+   group-accounting in `_run_dag_parallel`. The template must `depends_on` its source (validated
+   at load). Covered by `tests/test_fanout.py`; example `examples/fanout-research.yaml`. (Design
+   note: the list comes from the agent's *output*, not a named note — simpler than the original
+   `over:` sketch and needs no extra config.)
 4. **UI:** parallel lanes in the dashboard (the event schema already supports it).
 
 ## 6. Risks / open questions

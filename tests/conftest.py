@@ -9,6 +9,24 @@ with zero network and zero cost.
 ``RoutingFakeLLMClient`` extends this for parallel DAG tests: it routes replies
 by agent name (parsed from the system prompt), is fully thread-safe, and
 optionally accepts a ``threading.Barrier`` to prove two agents run concurrently.
+
+V2 Phase 3 fan-out support
+---------------------------
+Instance names (e.g. ``researcher#0``, ``researcher#1``) are handled by
+``RoutingFakeLLMClient`` transparently:
+
+- **Regex**: updated from ``\\w+`` to ``[^*]+`` so the ``#`` in instance names
+  is captured (``\\w+`` only matches ``[a-zA-Z0-9_]``).
+- **Template routing**: after parsing the raw name the client splits on ``#``
+  to derive the *template* (``researcher#0`` -> ``researcher``) and looks up
+  replies from the template's list.  This means all instances of a template
+  share the same reply queue, so three instances of ``researcher`` will each
+  consume successive replies from ``responses["researcher"]``.
+- **Per-instance call counting**: ``calls_by_agent`` is keyed on the *full*
+  instance name (``researcher#0``, etc.) so each instance's call count is
+  tracked independently.
+- **Backward compatibility**: non-instance names (``worker_a``, ``synth``)
+  are unaffected because ``name.split("#")[0]`` is a no-op for them.
 """
 
 from __future__ import annotations
@@ -98,7 +116,9 @@ def text_response(
 
 # Pattern matches the system prompt preamble written by agent.py's SYSTEM_TEMPLATE:
 #   "You are the **{name}** agent"
-_AGENT_NAME_RE = re.compile(r"the \*\*(\w+)\*\* agent")
+# The character class [^*]+ (instead of \w+) captures fan-out instance names
+# such as "researcher#0" where the '#' is not a word character.
+_AGENT_NAME_RE = re.compile(r"the \*\*([^*]+)\*\* agent")
 
 
 class RoutingFakeLLMClient(LLMClient):
@@ -174,13 +194,22 @@ class RoutingFakeLLMClient(LLMClient):
         m = _AGENT_NAME_RE.search(system_text)
         agent_name = m.group(1) if m else "__unknown__"
 
+        # For fan-out instances (e.g. "researcher#0"), route replies via the
+        # template name so all instances share the template's reply list.
+        # Non-instance names (e.g. "worker_a") are unaffected: split("#")[0]
+        # is a no-op when there is no "#" in the name.
+        template = agent_name.split("#")[0]
+
         # --- thread-safe state update + reply selection ------------------- #
         hit_barrier = False
         with self._lock:
+            # Count calls keyed on the FULL instance name so each instance
+            # has its own independent counter (researcher#0 vs researcher#1).
             self.calls_by_agent[agent_name] = self.calls_by_agent.get(agent_name, 0) + 1
             call_number = self.calls_by_agent[agent_name]
 
-            queue = self._responses.get(agent_name, [])
+            # Pull replies from the TEMPLATE's list so instances share the pool.
+            queue = self._responses.get(template, [])
             if queue:
                 reply = queue.pop(0)
             else:

@@ -11,7 +11,9 @@ DAG-shaped so V2 can schedule independent agents in parallel without a rewrite.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -169,12 +171,15 @@ def run_pipeline(
         if cfg.budget.wall_clock_s and (time.monotonic() - t0) > cfg.budget.wall_clock_s:
             raise PipelineStop(StopReason.WALL_CLOCK)
 
-    # --- per-agent execution (shared by the sequential + DAG paths) ------- #
-    def run_agent(name: str, incoming: Optional[str]):
-        agent_cfg = cfg.agents[name]
+    # --- per-agent execution (shared by sequential / DAG / fan-out paths) -- #
+    def run_agent(name: str, incoming: Optional[str], *, agent_cfg=None, branch_id=None):
+        # ``agent_cfg`` / ``branch_id`` are set for fan-out instances, which run a
+        # template agent's config under a distinct instance name (e.g. researcher#2).
+        agent_cfg = agent_cfg or cfg.agents[name]
+        branch_id = branch_id or name
         model = agent_cfg.model or cfg.llm.model
         at = recorder.add_agent(name, model)
-        at.branch_id = name
+        at.branch_id = branch_id
         at.depends_on = list(agent_cfg.depends_on)
         try:
             tools = REGISTRY.subset(agent_cfg.tools)
@@ -183,7 +188,7 @@ def run_pipeline(
             raise SystemExit(2)
 
         console.print(f"  [bold]{name}[/bold] ({model}) — tools: {agent_cfg.tools or 'none'}")
-        emit({"type": "agent_start", "agent": name, "branch_id": name,
+        emit({"type": "agent_start", "agent": name, "branch_id": branch_id,
               "model": model, "tools": agent_cfg.tools})
         runner = AgentRunner(
             name=name, role=agent_cfg.role, client=client, model=model, tools=tools,
@@ -194,7 +199,7 @@ def run_pipeline(
             on_iteration=pipeline_iter_guard, emit=emit,
         )
         result = runner.run(goal, incoming)
-        emit({"type": "agent_end", "agent": name, "branch_id": name, "kind": result.kind,
+        emit({"type": "agent_end", "agent": name, "branch_id": branch_id, "kind": result.kind,
               "output": (result.output or "")[:1000], "handoff_to": result.handoff_to,
               "stopped_reason": result.stopped_reason, "cost_usd": round(at.cost_usd, 6)})
         return result, at
@@ -206,7 +211,9 @@ def run_pipeline(
           "agents": list(cfg.agents), "start": cfg.start,
           "mode": "dag" if dag_mode else "sequential"})
 
-    if dag_mode and cfg.budget.max_parallel > 1:
+    has_fan_out = any(a.fan_out for a in cfg.agents.values())
+    if dag_mode and (cfg.budget.max_parallel > 1 or has_fan_out):
+        # fan-out needs the dynamic scheduler even at max_parallel=1 (pool of 1).
         stopped_reason, final_output = _run_dag_parallel(
             cfg, run_agent, console, cfg.budget.max_parallel, cancel_event
         )
@@ -328,22 +335,53 @@ def _run_dag(cfg, run_agent, console: Console) -> tuple[str, str]:
     return StopReason.COMPLETED, (outputs.get(terminal_name) or final_output)
 
 
+def _parse_list(text: str, max_items: int) -> list[str]:
+    """Extract a list from a fan-out agent's output: a JSON array if present,
+    else non-empty lines with leading bullets/numbering stripped. Capped to
+    ``max_items`` so a malformed output can't spawn an unbounded fan-out."""
+    text = (text or "").strip()
+    start, end = text.find("["), text.rfind("]")
+    if 0 <= start < end:
+        try:
+            arr = json.loads(text[start : end + 1])
+            if isinstance(arr, list):
+                items = [str(x).strip() for x in arr if str(x).strip()]
+                if items:
+                    return items[:max_items]
+        except (json.JSONDecodeError, ValueError):
+            pass
+    items = []
+    for line in text.splitlines():
+        line = re.sub(r"^[\s\-\*\d.)]+", "", line).strip()
+        if line:
+            items.append(line)
+    return items[:max_items]
+
+
 def _run_dag_parallel(cfg, run_agent, console: Console, max_workers: int,
                       cancel_event: threading.Event) -> tuple[str, str]:
-    """V2 Phase 2: run the DAG on a thread pool so independent branches execute
-    concurrently. A ready-set scheduler submits in-degree-0 agents; as each
-    finishes, its dependents' in-degrees drop and any newly-ready agent is
-    submitted. The join (terminal) agent runs only once all its deps complete.
+    """V2 Phase 2/3: run the DAG on a thread pool so independent branches execute
+    concurrently, and dynamically **fan out** an agent into N worker instances.
 
-    Scheduling state (``outputs``, ``indeg``, ``in_flight``) is touched only on
-    this driver thread — workers just run ``run_agent`` — so the cross-thread
-    shared state is limited to the already-locked budget/trace/notes/iteration
-    guard. On the first real stop (budget/iteration/wall-clock) the driver sets
+    Ready-set scheduler: submit in-degree-0 agents; as each finishes, drop its
+    dependents' in-degrees and submit any newly-ready agent; the join runs once
+    all its deps complete. A ``fan_out`` agent, on completion, has its output
+    parsed into a list and spawns one instance of its template per item
+    (``template#0..#k-1``); the template's dependents (the join) wait for the
+    whole group.
+
+    Scheduling state lives only on this driver thread — workers just run
+    ``run_agent`` — so cross-thread shared state is limited to the already-locked
+    budget/trace/notes/iteration guard. On the first real stop the driver sets
     ``cancel_event`` and stops submitting; in-flight branches wind down at their
     next iteration. Every stop is non-fatal → partial result + trace.
     """
     names = list(cfg.agents)
-    indeg = {n: len(cfg.agents[n].depends_on) for n in names}
+    fan_sources = {n: a.fan_out for n, a in cfg.agents.items() if a.fan_out}  # source -> FanOutConfig
+    templates = {fo.to for fo in fan_sources.values()}                        # spawned, not scheduled directly
+    scheduled = [n for n in names if n not in templates]
+
+    indeg = {n: len(cfg.agents[n].depends_on) for n in scheduled}
     adj: dict[str, list[str]] = {n: [] for n in names}
     for n in names:
         for d in cfg.agents[n].depends_on:
@@ -353,20 +391,39 @@ def _run_dag_parallel(cfg, run_agent, console: Console, max_workers: int,
     outputs: dict[str, str] = {}
     final_output = ""
     first_stop: Optional[str] = None
+    group_remaining: dict[str, int] = {}   # template -> instances still running
+    group_outputs: dict[str, list[str]] = {}
+    instance_group: dict[str, str] = {}     # instance name -> template
+    pending_ready: list[str] = []
 
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="agentforge") as ex:
-        in_flight: dict = {}  # Future -> agent name
+        in_flight: dict = {}  # Future -> name (agent or instance)
 
         def submit(name: str) -> None:
-            incoming = _package_deps(cfg.agents[name].depends_on, outputs)
-            in_flight[ex.submit(run_agent, name, incoming)] = name
+            in_flight[ex.submit(run_agent, name, _package_deps(cfg.agents[name].depends_on, outputs))] = name
 
-        for n in [n for n in names if indeg[n] == 0]:
-            submit(n)
+        def submit_instance(inst: str, template: str, item: str) -> None:
+            base = _package_deps(cfg.agents[template].depends_on, outputs) or ""
+            incoming = (base + "\n\n" if base else "") + f"Your assigned item:\n{item}"
+            fut = ex.submit(run_agent, inst, incoming, agent_cfg=cfg.agents[template], branch_id=inst)
+            in_flight[fut] = inst
+            instance_group[inst] = template
+
+        def finish_group(template: str) -> None:
+            outs = group_outputs.get(template, [])
+            outputs[template] = "\n\n".join(f"--- {template}#{i} ---\n{o}" for i, o in enumerate(outs))
+            for m in adj[template]:
+                if m in indeg:
+                    indeg[m] -= 1
+                    if indeg[m] == 0:
+                        pending_ready.append(m)
+
+        for n in scheduled:
+            if indeg[n] == 0:
+                submit(n)
 
         while in_flight:
             done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
-            newly_ready: list[str] = []
             for fut in done:
                 name = in_flight.pop(fut)
                 try:
@@ -383,17 +440,41 @@ def _run_dag_parallel(cfg, run_agent, console: Console, max_workers: int,
                         console.print(f"  [yellow]⛔ {e.reason}; cancelling remaining branches[/yellow]")
                         cancel_event.set()
                     continue
-                outputs[name] = result.output or ""
+
                 if result.output:
                     final_output = result.output
+
+                if name in instance_group:  # a fan-out instance finished
+                    tmpl = instance_group[name]
+                    group_outputs.setdefault(tmpl, []).append(result.output or "")
+                    group_remaining[tmpl] -= 1
+                    if group_remaining[tmpl] == 0 and first_stop is None:
+                        finish_group(tmpl)
+                    continue
+
+                outputs[name] = result.output or ""
+                if name in fan_sources and first_stop is None:  # expand fan-out
+                    fo = fan_sources[name]
+                    items = _parse_list(result.output, fo.max)
+                    group_outputs[fo.to] = []
+                    if items:
+                        group_remaining[fo.to] = len(items)
+                        console.print(f"  [dim]fan-out:[/dim] {name} → {len(items)}× {fo.to}")
+                        for i, item in enumerate(items):
+                            submit_instance(f"{fo.to}#{i}", fo.to, item)
+                    else:
+                        finish_group(fo.to)  # nothing to fan out → empty group resolves
                 for m in adj[name]:
+                    if m in templates or m not in indeg:
+                        continue  # template deps resolve via their group, not here
                     indeg[m] -= 1
                     if indeg[m] == 0:
-                        newly_ready.append(m)
-            if first_stop is None:
-                for m in newly_ready:
+                        pending_ready.append(m)
+
+            if first_stop is None and pending_ready:
+                for m in pending_ready:
                     submit(m)
-            # if cancelled, stop submitting; let in-flight branches drain
+            pending_ready.clear()
 
     reason = first_stop or StopReason.COMPLETED
     if terminal_name and outputs.get(terminal_name):

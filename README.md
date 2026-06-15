@@ -18,6 +18,8 @@ It works with any [OpenRouter](https://openrouter.ai) model and direct Anthropic
 | Sandbox + permissions | Add-on / none | **Built-in, tiered** |
 | Lines to grok the core | thousands | **~1.5k** |
 
+> **Status:** V1 shipped & live-verified; V2 DAG pipelines + parallel execution have landed (fan-out is in progress).
+
 ---
 
 ## 🖥️ Live dashboard — no commands to remember
@@ -197,6 +199,65 @@ The argument schema (`text: string`, required) is generated from the signature; 
 
 ---
 
+## 🔀 Parallel pipelines (DAG mode)
+
+A pipeline doesn't have to be a straight chain. Instead of `handoff_to`, an agent can declare `depends_on: [other agents]` to wire a **DAG**. The runtime topologically sorts the agents, runs **independent branches concurrently** on a thread pool (`budget.max_parallel`, default 4), and a **join** agent (`depends_on: [a, b]`, usually `terminal: true`) waits for **all** its dependencies and receives every one of their outputs as context. Cycles are rejected at config load.
+
+Every V1 guarantee still holds across threads — the hard budget cap, sandbox, permissions, loop guards, and trace are all thread-safe, and the first branch to hit a cap **cancels the rest gracefully** (you still get a partial result + trace). Because LLM calls are I/O-bound, threads give real concurrency with no asyncio rewrite. Set `max_parallel: 1` for a deterministic sequential run.
+
+```mermaid
+flowchart TD
+    P([planner]) --> R1[pricing_researcher]
+    P --> R2[positioning_researcher]
+
+    subgraph concurrent ["run concurrently (budget.max_parallel)"]
+        R1
+        R2
+    end
+
+    R1 --> S[synthesizer<br/>join: depends_on both]
+    R2 --> S
+    S --> O([terminal — final report])
+```
+
+```yaml
+# examples/research-dag.yaml (trimmed) — planner ─▶ two researchers ∥ ─▶ synthesizer
+budget:
+  max_usd_per_run: 0.30
+  max_parallel: 4                # DAG branches run concurrently (1 = sequential)
+
+agents:
+  planner:
+    role: Split the goal into a pricing angle and a positioning angle.
+    tools: [save_note]
+
+  pricing_researcher:
+    role: Research the pricing & plan tiers for both products.
+    tools: [web_search, read_url, save_note]
+    depends_on: [planner]                       # DAG edge — waits for the planner
+
+  positioning_researcher:
+    role: Research positioning — who each product targets and why.
+    tools: [web_search, read_url, save_note]
+    depends_on: [planner]                       # independent of pricing_researcher → runs in parallel
+
+  synthesizer:
+    role: Merge both research streams into one comparison + recommendation.
+    tools: [read_note, write_file]
+    depends_on: [pricing_researcher, positioning_researcher]   # join — waits for both
+    terminal: true
+
+start: planner
+```
+
+```bash
+agentforge run examples/research-dag.yaml --goal "Compare Notion and Linear" --yes
+```
+
+> Next up: **fan-out** (one agent → N dynamically-spawned workers over a list it produced) is the next increment — V2 Phase 3, in progress.
+
+---
+
 ## Safety is first-class, not an afterthought
 
 | Layer | What it does |
@@ -223,6 +284,7 @@ The argument schema (`text: string`, required) is generated from the signature; 
 | | `api_key_env` | `OPENROUTER_API_KEY` | Env var to read the key from |
 | `budget` | `max_usd_per_run` | `0.25` | Hard cap; run aborts with a partial result if crossed |
 | | `max_total_iterations` | `30` | Cap across all agents (kills ping-pong) |
+| | `max_parallel` | `4` | DAG mode: max branches run concurrently (1 = sequential) |
 | `sandbox` | `backend` | `subprocess` | `subprocess` · `docker` · `e2b` |
 | | `network` | `false` | Allow network inside the sandbox (web tools are exempt) |
 | | `timeout_s` / `cpu_seconds` / `memory_mb` | `20` / `10` / `512` | Resource limits |
@@ -234,6 +296,7 @@ The argument schema (`text: string`, required) is generated from the signature; 
 | | `tools` | `[]` | Allow-listed tool names for this agent |
 | | `model` | inherits `llm.model` | Per-agent model override |
 | | `handoff_to` / `terminal` | — | Sequential edge, or the final agent |
+| | `depends_on` | `[]` | DAG dependencies (alternative to `handoff_to`); a join lists multiple |
 | | `max_iterations` | `10` | Per-agent ReAct cap |
 
 ### Built-in tools
@@ -300,7 +363,7 @@ Tests use a scripted `FakeLLMClient`, so the whole suite is deterministic and of
 
 ## Limitations
 
-- **v1 is sequential** — agents hand off in a chain to a terminal agent. The config and data model are built **DAG-ready** for V2 (parallel fan-out/fan-in, `depends_on`), but parallelism isn't implemented yet.
+- **V2 DAG mode is live** — agents can `depends_on` each other and independent branches run in parallel (`budget.max_parallel`) with fan-in joins (see [Parallel pipelines](#-parallel-pipelines-dag-mode)). Dynamic **fan-out** (one agent → N workers) is the remaining V2 increment, in progress.
 - The `subprocess` sandbox blocks network via a socket guard and caps resources via `rlimit` (POSIX) — for hostile code use the `docker` or `e2b` backend for real isolation.
 - Cost figures depend on provider-reported token counts; the pre-call cap is conservative but a single in-flight call can overshoot slightly unless `llm.max_tokens` bounds completion.
 

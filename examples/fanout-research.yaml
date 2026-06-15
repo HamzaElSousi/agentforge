@@ -1,0 +1,68 @@
+# V2 Phase 3 fan-out research pipeline.
+#
+# The planner splits the goal into subtopics and outputs them as a JSON array.
+# The runtime spawns ONE researcher instance per subtopic (up to 5), running
+# them concurrently.  The synthesizer joins all researcher outputs into a single
+# report.
+#
+#   agentforge run examples/fanout-research.yaml \
+#     --goal "Survey the current landscape of open-source LLM inference engines" \
+#     --yes
+#
+# Instance names in the trace:  researcher#0, researcher#1, researcher#2, ...
+# Each runs in parallel (max_parallel: 4 means up to 4 threads at once).
+name: fanout-research
+
+llm:
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash
+  api_key_env: OPENROUTER_API_KEY
+
+budget:
+  max_usd_per_run: 0.30
+  max_total_iterations: 40
+  max_parallel: 4
+
+sandbox:
+  backend: subprocess
+
+permissions:
+  mode: prompt
+  auto_approve: [web_search, read_url, save_note, read_note]
+  non_interactive: allow_auto_approved
+
+agents:
+  planner:
+    role: >
+      Split the user's goal into exactly 3 focused, non-overlapping subtopics
+      suitable for independent research.  Output them as a JSON array of strings
+      and nothing else — for example: ["subtopic A", "subtopic B", "subtopic C"].
+      Save a copy of the array with save_note so the synthesizer can reference it.
+    tools: [save_note]
+    max_iterations: 3
+    fan_out:
+      to: researcher
+      max: 5
+
+  researcher:
+    role: >
+      Research the ONE assigned subtopic shown at the end of your context under
+      "Your assigned item:".  Use web_search to find current sources, read_url to
+      extract key details, and save_note to persist your findings.  When you have
+      gathered enough information, write a concise summary of what you found.
+    tools: [web_search, read_url, save_note]
+    depends_on: [planner]
+    max_iterations: 6
+
+  synthesizer:
+    role: >
+      Read all researcher notes with read_note, then merge every researcher's
+      findings into one comprehensive, well-structured report.  Write the final
+      report to report.md with write_file and return the full text as your final
+      answer.
+    tools: [read_note, write_file]
+    depends_on: [researcher]
+    terminal: true
+    max_iterations: 6
+
+start: planner
